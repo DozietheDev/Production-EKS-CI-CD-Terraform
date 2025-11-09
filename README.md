@@ -50,7 +50,7 @@ kubectl apply -f k8s/deployment.yaml
 kubectl apply -f k8s/ingress.yaml
 
 # Access locally:
-minikube service selar-api-service
+minikube service selar-app-service
 
 
 [B] Cloud Deployment (AWS EKS)

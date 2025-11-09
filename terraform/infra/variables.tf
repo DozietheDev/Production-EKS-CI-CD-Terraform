@@ -26,7 +26,7 @@ variable "eks_cluster_name" {
 variable "app_name" {
   description = "Application name"
   type        = string
-  default     = "selar-api"
+  default     = "selar-app"
 }
 
 variable "local_image_name" {
