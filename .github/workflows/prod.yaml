@@ -1,0 +1,175 @@
+name: Deploy to Production (EKS + Terraform)
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  id-token: write       # Required for AWS OIDC
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPO: selar-api
+  EKS_CLUSTER: selar-eks-prod
+  TERRAFORM_DIR: terraform/infra
+  K8S_MANIFESTS_DIR: deploy/selar-kubernetes
+
+jobs:
+
+  terraform-validate:
+    name: Terraform Validate
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform Init
+        working-directory: ${{ env.TERRAFORM_DIR }}
+        run: terraform init
+
+      - name: Terraform Validate
+        working-directory: ${{ env.TERRAFORM_DIR }}
+        run: terraform validate
+
+
+  terraform-plan:
+    name: Terraform Plan
+    needs: terraform-validate
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::123456789012:role/selar-github-oidc-role
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform Init
+        working-directory: ${{ env.TERRAFORM_DIR }}
+        run: terraform init
+
+      - name: Select Workspace
+        working-directory: ${{ env.TERRAFORM_DIR }}
+        run: terraform workspace select prod || terraform workspace new prod
+
+      - name: Terraform Plan
+        id: tfplan
+        working-directory: ${{ env.TERRAFORM_DIR }}
+        run: terraform plan -out=tfplan
+
+      - name: Upload Plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan
+          path: infra/tfplan
+
+
+  terraform-apply:
+    name: Terraform Apply (Needs Approval)
+    needs: terraform-plan
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://selar.co
+    # ✅ GitHub environment provides the APPROVAL GATE
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::123456789012:role/selar-github-oidc-role
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Download Plan
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan
+          path: infra
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform Init
+        working-directory: ${{ env.TERRAFORM_DIR }}
+        run: terraform init
+
+      - name: Select Workspace
+        working-directory: ${{ env.TERRAFORM_DIR }}
+        run: terraform workspace select prod
+
+      - name: Terraform Apply
+        working-directory: ${{ env.TERRAFORM_DIR }}
+        run: terraform apply -auto-approve tfplan
+
+
+  build-and-push:
+    name: Build & Push Docker Image to ECR
+    needs: terraform-apply
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::123456789012:role/selar-github-oidc-role
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        run: |
+          aws ecr get-login-password --region $AWS_REGION \
+          | docker login --username AWS --password-stdin ${ACCOUNT_ID}.dkr.ecr.$AWS_REGION.amazonaws.com
+
+      - name: Build Docker Image
+        run: |
+          docker build -t $ECR_REPO:latest ./apps
+
+      - name: Tag & Push
+        run: |
+          docker tag $ECR_REPO:latest \
+            ${ACCOUNT_ID}.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO:latest
+          docker push \
+            ${ACCOUNT_ID}.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO:latest
+
+
+  deploy-to-eks:
+    name: Apply Kubernetes Manifests to EKS
+    needs: build-and-push
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::123456789012:role/selar-github-oidc-role
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig \
+            --region $AWS_REGION \
+            --name $EKS_CLUSTER
+
+      - name: Apply Kubernetes Manifests
+        run: |
+          kubectl apply -f $K8S_MANIFESTS_DIR
