@@ -123,6 +123,9 @@ Always tag your production image (selar-api:prod) explicitly — avoid latest.
 Store secrets securely in AWS Secrets Manager or Kubernetes Secrets.
 Ensure your domain DNS points to the Load Balancer created by the Nginx ingress.
 
+# Notes
+Letsencypt instead of ACM was used for tls because of it is free and open sourced but in the for better production security, it is better to use ACM
+
 
 
 Author:
